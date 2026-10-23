@@ -1,0 +1,71 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag yang ada zip source-nya
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.inputs.tag }}
+    steps:
+      - name: Download source zip dari release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dl src
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.zip' --dir dl
+          count=$(ls dl/*.zip | wc -l)
+          if [ "$count" -ne 1 ]; then
+            echo "harus tepat 1 file .zip di release $TAG, ketemu $count"
+            ls dl
+            exit 1
+          fi
+          unzip -q dl/*.zip -d src
+          rm -rf src/__MACOSX
+          shopt -s dotglob nullglob
+          entries=(src/*)
+          if [ "${#entries[@]}" -eq 1 ] && [ -d "${entries[0]}" ]; then
+            inner="${entries[0]}"
+            mv "$inner"/* src/
+            rmdir "$inner"
+          fi
+          test -f src/settings.gradle.kts -o -f src/settings.gradle
+          ls -la src
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 9.7.1
+
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Generate standard Gradle Wrapper
+        working-directory: src
+        run: gradle wrapper --gradle-version 9.7.1 --no-daemon --stacktrace
+
+      - name: Build release APK
+        working-directory: src
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: src/**/build/outputs/apk/release/*.apk
+          if-no-files-found: error
